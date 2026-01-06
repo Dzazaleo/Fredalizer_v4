@@ -141,6 +141,11 @@ export const useVisionEngine = () => {
 
       if (signal.aborted) return;
 
+      // Logic 1 (Temporal Resolution): Set playbackRate to 0.5x
+      // This effectively gives the CPU double the time to process each frame,
+      // ensuring high-fidelity scanning for fast-moving transients.
+      video.playbackRate = 0.5;
+
       // Setup Canvas for Processing (Downscaled)
       const processWidth = 640;
       const scale = processWidth / video.videoWidth;

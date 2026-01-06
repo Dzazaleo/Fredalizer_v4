@@ -9,8 +9,8 @@ declare var cv: any;
  * Logic:
  * 1. Project Normalized Reference Box onto current Frame dimensions.
  * 2. Find candidates using MENU_DARK (Background).
- * 3. SPATIAL LOCK: Check Intersection over Union (IoU) > 0.3.
- * 4. TRIAD CHECK: Confirm presence of MENU_LIGHT and TEXT_WHITE (> 1% density).
+ * 3. SPATIAL LOCK: Check Intersection over Union (IoU) > 0.15.
+ * 4. TRIAD CHECK: Confirm presence of MENU_LIGHT and TEXT_WHITE (> 0.5% density).
  * 
  * Memory Management:
  * - Treats srcFrame as READ ONLY (never deleted).
@@ -76,8 +76,10 @@ export function scanFrame(srcFrame: any, profile: VisionProfile, debugMode: bool
       
       const iou = calculateIoU(rect, expectedRect);
 
-      // Relaxed Rule: IoU > 0.3 (30% overlap)
-      if (iou < 0.3) {
+      // Logic 2 (Spatial Relaxation):
+      // Lower IoU threshold to 0.15 to catch menus that are partially visible
+      // (e.g., sliding in from the top/side).
+      if (iou < 0.15) {
         continue; // Next contour
       }
 
@@ -113,7 +115,10 @@ export function scanFrame(srcFrame: any, profile: VisionProfile, debugMode: bool
           console.log(`[Detection] Triad Density - Light: ${(lightRatio*100).toFixed(2)}%, White: ${(whiteRatio*100).toFixed(2)}%`);
         }
 
-        if (lightRatio > 0.01 && whiteRatio > 0.01) {
+        // Logic 3 (Color Sensitivity):
+        // Lower density requirement to 0.005 (0.5%) to catch high-opacity fade-ins
+        // or moments where text is barely visible.
+        if (lightRatio > 0.005 && whiteRatio > 0.005) {
           detected = true;
           // Break, but cleanup happens in finally block below before next iteration logic or exit
         }
