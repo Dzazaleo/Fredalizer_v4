@@ -1,48 +1,67 @@
-import fs from 'fs';
-import { exec } from 'child_process';
-import path from 'path';
+import React from 'react';
+import { Download, Film, FileJson } from 'lucide-react';
+import { Button } from './Button';
+import { Range } from '../utils/ffmpegBuilder';
 
-// Usage: node render.js <video_file> <json_file>
-const args = process.argv.slice(2);
-const inputVideo = args[0];
-const jsonFile = args[1];
-
-if (!inputVideo || !jsonFile) {
-  console.log("❌ Usage: node render.js <video.mp4> <cut-list.json>");
-  process.exit(1);
+interface ExportControlProps {
+  keepRanges: Range[];
+  onExport: () => void;
+  isProcessing: boolean;
+  progress: number;
+  status: string;
 }
 
-// Read the Cut List
-console.log(`📂 Reading cut list: ${jsonFile}`);
-const ranges = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
-console.log(`✂️  Stitching ${ranges.length} segments...`);
+export const ExportControl: React.FC<ExportControlProps> = ({ keepRanges }) => {
 
-// Build the FFmpeg Filter
-let filter = '';
-let concat = '';
+  const handleDownloadJson = () => {
+    // 1. Create the cut list data
+    const data = JSON.stringify(keepRanges, null, 2);
+    
+    // 2. Download it as a JSON file
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'cut-list.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
-ranges.forEach((r, i) => {
-  // Trim video & audio, reset timestamps
-  filter += `[0:v]trim=start=${r.start}:end=${r.end},setpts=PTS-STARTPTS[v${i}];`;
-  filter += `[0:a]atrim=start=${r.start}:end=${r.end},asetpts=PTS-STARTPTS[a${i}];`;
-  concat += `[v${i}][a${i}]`;
-});
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-sm">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-green-500/10 text-green-500 rounded-lg">
+            <Film size={24} />
+          </div>
+          <div>
+            <h3 className="font-semibold text-slate-200">Local Export Ready</h3>
+            <p className="text-sm text-slate-500">
+              {keepRanges.length} segments identified
+            </p>
+          </div>
+        </div>
+      </div>
 
-filter += `${concat}concat=n=${ranges.length}:v=1:a=1[outv][outa]`;
+      <div className="space-y-4">
+        <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 text-sm text-slate-400">
+          <p className="flex items-center gap-2">
+            <FileJson size={16} className="text-blue-500" />
+            <span>Hybrid Mode: Download JSON to render locally.</span>
+          </p>
+        </div>
 
-// Output filename
-const outputName = `${path.parse(inputVideo).name}_clean.mp4`;
-
-// The Command
-// Since you added FFmpeg to PATH, we can just call 'ffmpeg' directly!
-const cmd = `ffmpeg -i "${inputVideo}" -filter_complex "${filter}" -map "[outv]" -map "[outa]" -c:v libx264 -crf 18 -preset fast "${outputName}" -y`;
-
-console.log("🚀 Rendering started... (This might take a moment)");
-
-exec(cmd, (error, stdout, stderr) => {
-  if (error) {
-    console.error(`❌ Error: ${error.message}`);
-    return;
-  }
-  console.log(`✅ Done! Saved as: ${outputName}`);
-});
+        <Button 
+          onClick={handleDownloadJson}
+          className="w-full flex items-center justify-center gap-2 py-3"
+          disabled={keepRanges.length === 0}
+        >
+          <Download size={18} />
+          Download Cut List (JSON)
+        </Button>
+      </div>
+    </div>
+  );
+};
