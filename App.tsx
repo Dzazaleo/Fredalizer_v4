@@ -79,6 +79,7 @@ const App: React.FC = () => {
   /**
    * Calculates the "Keep" ranges by inverting the detection ranges.
    * Logic: The detections are the "bad" parts (menus). We want everything else.
+   * Update: Applies a FRAME_MARGIN (0.05s) to prevent frame bleeding.
    */
   const getKeepRanges = useCallback((): Range[] => {
     if (!videoDuration) return [];
@@ -88,16 +89,24 @@ const App: React.FC = () => {
        return [{ start: 0, end: videoDuration }];
     }
 
+    const FRAME_MARGIN = 0.05; // ~3 frames at 60fps safety buffer
     const sortedDetections = [...detections].sort((a, b) => a.start - b.start);
     const keep: Range[] = [];
     let currentCursor = 0;
 
     sortedDetections.forEach(det => {
+      // Calculate where the current 'good' segment should end
+      // We subtract the margin from the detection start to stop early
+      const safeEnd = Math.max(0, det.start - FRAME_MARGIN);
+
       // Add segment before the detection if it's long enough (> 0.1s)
-      if (det.start > currentCursor + 0.1) {
-        keep.push({ start: currentCursor, end: det.start });
+      if (safeEnd > currentCursor + 0.1) {
+        keep.push({ start: currentCursor, end: safeEnd });
       }
-      currentCursor = Math.max(currentCursor, det.end);
+      
+      // Move cursor to the end of detection plus margin
+      // Clamp to videoDuration to ensure we don't exceed the file length
+      currentCursor = Math.max(currentCursor, Math.min(videoDuration, det.end + FRAME_MARGIN));
     });
 
     // Add final segment after last detection
