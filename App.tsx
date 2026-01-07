@@ -12,6 +12,7 @@ const App: React.FC = () => {
   const [referenceAsset, setReferenceAsset] = useState<ReferenceAsset | null>(null);
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [isAddingToQueue, setIsAddingToQueue] = useState(false);
   
   // Vision Engine Hook
   const { 
@@ -19,34 +20,90 @@ const App: React.FC = () => {
     processVideo: runVision 
   } = useVisionEngine();
 
-  // Helper to load duration
+  // Helper: Robust ID Generation (Polyfill for non-secure contexts)
+  const generateId = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  };
+
+  // Helper to load duration with Timeout Safety & DOM Mounting
   const getVideoDuration = (url: string): Promise<number> => {
     return new Promise((resolve) => {
       const vid = document.createElement('video');
       vid.preload = 'metadata';
-      vid.onloadedmetadata = () => {
-        resolve(vid.duration);
+      vid.muted = true;
+      vid.playsInline = true;
+      
+      // Fix: Use off-screen positioning instead of display:none to ensure metadata loads
+      vid.style.position = 'fixed';
+      vid.style.top = '-9999px';
+      vid.style.left = '-9999px';
+      vid.style.opacity = '0';
+      vid.style.pointerEvents = 'none';
+      vid.style.width = '1px';
+      vid.style.height = '1px';
+      
+      document.body.appendChild(vid);
+
+      const cleanup = () => {
+        if (document.body.contains(vid)) {
+          document.body.removeChild(vid);
+        }
+        vid.removeAttribute('src');
+        vid.load();
       };
-      vid.onerror = () => resolve(0);
+      
+      // Safety timeout: Extended to 15s for large files (1GB+)
+      const timeoutId = setTimeout(() => {
+        console.warn("Video metadata load timed out (15s limit) for:", url);
+        cleanup();
+        resolve(0);
+      }, 15000);
+
+      vid.onloadedmetadata = () => {
+        clearTimeout(timeoutId);
+        // Sanity check: ensure duration is finite
+        const duration = Number.isFinite(vid.duration) ? vid.duration : 0;
+        resolve(duration);
+        cleanup();
+      };
+
+      vid.onerror = () => {
+        clearTimeout(timeoutId);
+        console.error("Video load error for:", url);
+        // Resolve 0 instead of rejecting to keep the batch alive
+        resolve(0);
+        cleanup();
+      };
+
       vid.src = url;
     });
   };
 
   const handleFilesSelected = async (files: File[]) => {
-    // Generate items
-    const newItems: QueueItem[] = await Promise.all(files.map(async (file) => {
-      const url = URL.createObjectURL(file);
-      const duration = await getVideoDuration(url);
-      return {
-        id: crypto.randomUUID(),
-        asset: { file, previewUrl: url, duration },
-        status: ProcessingStatus.PENDING,
-        progress: 0,
-        detections: []
-      };
-    }));
+    setIsAddingToQueue(true);
+    try {
+      // Generate items
+      const newItems: QueueItem[] = await Promise.all(files.map(async (file) => {
+        const url = URL.createObjectURL(file);
+        const duration = await getVideoDuration(url);
+        return {
+          id: generateId(),
+          asset: { file, previewUrl: url, duration },
+          status: ProcessingStatus.PENDING,
+          progress: 0,
+          detections: []
+        };
+      }));
 
-    setQueue(prev => [...prev, ...newItems]);
+      setQueue(prev => [...prev, ...newItems]);
+    } catch (err) {
+      console.error("Error adding files to queue:", err);
+    } finally {
+      setIsAddingToQueue(false);
+    }
   };
 
   const handleReferenceSelected = useCallback((file: File, url: string) => {
@@ -200,14 +257,20 @@ const App: React.FC = () => {
                <h3 className="font-semibold text-slate-200">2. Add Footage</h3>
                <VideoDropZone onFilesSelected={handleFilesSelected} />
                <p className="text-xs text-slate-500 text-center">
-                 {queue.length} items in queue
+                 {isAddingToQueue ? (
+                   <span className="flex items-center justify-center gap-2 text-blue-400">
+                     <Loader2 className="animate-spin w-3 h-3" /> Processing inputs...
+                   </span>
+                 ) : (
+                   <>{queue.length} items in queue</>
+                 )}
                </p>
             </div>
 
              <div className="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800">
                 <Button 
                   className="w-full flex items-center justify-center gap-2 py-3" 
-                  disabled={!referenceAsset || queue.length === 0 || isBatchProcessing}
+                  disabled={!referenceAsset || queue.length === 0 || isBatchProcessing || isAddingToQueue}
                   onClick={processQueue}
                 >
                   {isBatchProcessing ? <Loader2 className="animate-spin" /> : <Sparkles size={18} />}
@@ -233,7 +296,7 @@ const App: React.FC = () => {
              {queue.length === 0 ? (
                <div className="h-64 flex flex-col items-center justify-center border-2 border-dashed border-slate-800 rounded-2xl text-slate-600 bg-slate-900/50">
                  <FileVideo size={48} className="mb-4 opacity-50" />
-                 <p>Queue is empty. Add videos to begin.</p>
+                 <p>{isAddingToQueue ? 'Reading metadata...' : 'Queue is empty. Add videos to begin.'}</p>
                </div>
              ) : (
                <div className="space-y-3">

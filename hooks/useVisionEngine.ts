@@ -12,6 +12,7 @@ interface VisionState {
   isProcessing: boolean;
   progress: number;
   status: 'idle' | 'initializing' | 'calibrating' | 'processing' | 'completed' | 'error';
+  detections: DetectionRange[];
 }
 
 // Access global OpenCV instance
@@ -19,8 +20,10 @@ declare var cv: any;
 
 function processDetections(timestamps: number[]): DetectionRange[] {
   if (timestamps.length === 0) return [];
+
   const sorted = [...timestamps].sort((a, b) => a - b);
   const ranges: DetectionRange[] = [];
+  
   let start = sorted[0];
   let prev = sorted[0];
   const TOLERANCE = 0.5;
@@ -34,6 +37,7 @@ function processDetections(timestamps: number[]): DetectionRange[] {
     prev = curr;
   }
   ranges.push({ start, end: prev, confidence: 1.0 });
+
   return ranges;
 }
 
@@ -42,18 +46,51 @@ export const useVisionEngine = () => {
     isProcessing: false,
     progress: 0,
     status: 'idle',
+    detections: []
   });
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rawDetectionsRef = useRef<number[]>([]);
+  const lastProcessedTimeRef = useRef<number>(-1);
 
+  // 1. Setup Video Element with "Ghost Mount"
   useEffect(() => {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+
+    // Mount to DOM to prevent browser throttling
+    video.style.position = 'fixed';
+    video.style.top = '0';
+    video.style.left = '0';
+    video.style.width = '1px';
+    video.style.height = '1px';
+    video.style.opacity = '0.01'; // Not 0, to avoid "invisible" optimization
+    video.style.pointerEvents = 'none';
+    video.style.zIndex = '-9999';
+    
+    document.body.appendChild(video);
+    videoElementRef.current = video;
+
     const canvas = document.createElement('canvas');
     canvasRef.current = canvas;
-    
+
     return () => {
-      if (abortControllerRef.current) abortControllerRef.current.abort();
+      // Cleanup: Remove from DOM
+      if (videoElementRef.current && document.body.contains(videoElementRef.current)) {
+        document.body.removeChild(videoElementRef.current);
+      }
+      if (videoElementRef.current) {
+        videoElementRef.current.pause();
+        videoElementRef.current.removeAttribute('src');
+        videoElementRef.current.load();
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
 
@@ -61,43 +98,28 @@ export const useVisionEngine = () => {
     if (typeof cv === 'undefined') {
       console.error("OpenCV is not loaded");
       setState(prev => ({ ...prev, status: 'error' }));
-      throw new Error("OpenCV not loaded");
+      return [];
     }
 
-    setState({ isProcessing: true, progress: 0, status: 'initializing' });
+    setState({
+      isProcessing: true,
+      progress: 0,
+      status: 'initializing',
+      detections: []
+    });
     rawDetectionsRef.current = [];
+    lastProcessedTimeRef.current = -1;
 
-    if (abortControllerRef.current) abortControllerRef.current.abort();
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
     const { signal } = abortController;
 
-    const video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-
-    // Hard Reset Cleanup
-    const cleanupVideo = () => {
-        try {
-          // Explicitly nullify listeners
-          video.onloadeddata = null;
-          video.onended = null;
-          video.onerror = null;
-          (video as any).requestVideoFrameCallback = null;
-          
-          video.pause();
-          video.removeAttribute('src');
-          video.load();
-          video.remove();
-        } catch (e) {
-          console.warn("Video cleanup warning:", e);
-        }
-    };
-
     try {
-      // --- Phase 1: Calibration ---
       setState(prev => ({ ...prev, status: 'calibrating' }));
+      
       const referenceImage = new Image();
       referenceImage.crossOrigin = "anonymous";
       referenceImage.src = referenceImageUrl;
@@ -107,34 +129,23 @@ export const useVisionEngine = () => {
         referenceImage.onerror = reject;
       });
 
-      if (signal.aborted) throw new Error("Aborted");
+      if (signal.aborted) return [];
       const profile: VisionProfile = calibrateReference(referenceImage);
 
-      // --- Phase 2: Processing ---
       setState(prev => ({ ...prev, status: 'processing' }));
+      
+      const video = videoElementRef.current!;
       const canvas = canvasRef.current!;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      if (!ctx) throw new Error("No Context");
+      if (!ctx) throw new Error("Could not get canvas context");
 
       video.src = videoUrl;
-
-      // Robust Load Wait with Timeout
-      await new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(() => reject(new Error("Video load timeout")), 15000);
-        
-        video.onloadeddata = () => {
-          clearTimeout(timeoutId);
-          resolve(true);
-        };
-        video.onerror = (e) => {
-          clearTimeout(timeoutId);
-          reject(new Error(`Video Load Failed: ${e}`));
-        };
+      video.playbackRate = 2.0; // PROCESS 2x SPEED
+      
+      // Wait for metadata so we know duration
+      await new Promise((resolve) => {
+        video.onloadedmetadata = resolve;
       });
-
-      if (signal.aborted) throw new Error("Aborted");
-
-      video.playbackRate = 0.5;
 
       const processWidth = 640;
       const scale = processWidth / video.videoWidth;
@@ -142,81 +153,93 @@ export const useVisionEngine = () => {
       canvas.width = processWidth;
       canvas.height = processHeight;
 
-      await new Promise<void>((resolve, reject) => {
+      await new Promise<void>(async (resolve, reject) => {
         video.onended = () => resolve();
         video.onerror = (e) => reject(e);
 
-        let frameCount = 0;
+        // Frame Sampling Config
+        const SAMPLE_INTERVAL = 0.1; // 10 FPS effective scanning rate
+        let uiUpdateCounter = 0;
         
         const processFrame = async (now: number, metadata: any) => {
           if (signal.aborted) {
-            resolve();
+            video.pause();
             return;
           }
 
           try {
-            ctx.drawImage(video, 0, 0, processWidth, processHeight);
+            // THROTTLE: Only process if time advanced significantly
+            // This prevents the main thread from choking on every single refresh (60hz)
+            const currentTime = metadata.mediaTime;
             
-            let mat: any = null;
-            try {
-              const imageData = ctx.getImageData(0, 0, processWidth, processHeight);
-              mat = cv.matFromImageData(imageData);
-              const isDetected = scanFrame(mat, profile, false);
+            if (currentTime - lastProcessedTimeRef.current >= SAMPLE_INTERVAL) {
+              lastProcessedTimeRef.current = currentTime;
+
+              // 1. Draw Frame
+              ctx.drawImage(video, 0, 0, processWidth, processHeight);
               
-              if (isDetected) {
-                rawDetectionsRef.current.push(metadata.mediaTime);
+              // 2. Scan (Scoped Memory Management)
+              let mat: any = null;
+              try {
+                const imageData = ctx.getImageData(0, 0, processWidth, processHeight);
+                mat = cv.matFromImageData(imageData);
+                const isDetected = scanFrame(mat, profile, false); 
+
+                if (isDetected) {
+                  rawDetectionsRef.current.push(currentTime);
+                }
+              } finally {
+                if (mat) mat.delete();
               }
-            } finally {
-              if (mat) mat.delete();
             }
 
-            frameCount++;
-            if (frameCount % 30 === 0) {
-              const prog = Math.min(100, Math.round((metadata.mediaTime / video.duration) * 100));
-              setState(prev => ({ ...prev, progress: prog }));
+            uiUpdateCounter++;
+            // Update UI every ~30 frames of playback (approx every 0.5 - 1s real time)
+            if (uiUpdateCounter % 30 === 0) {
+              const progress = Math.min(100, Math.round((metadata.mediaTime / video.duration) * 100));
+              setState(prev => ({ ...prev, progress }));
+              
+              // CRITICAL: Yield to main thread to allow UI render & prevent freeze
+              await new Promise(r => setTimeout(r, 0));
             }
 
             if (!video.paused && !video.ended) {
               (video as any).requestVideoFrameCallback(processFrame);
-            } else {
-                resolve();
             }
           } catch (e) {
-            console.error("Frame error", e);
-            if (!video.paused && !video.ended) {
-                (video as any).requestVideoFrameCallback(processFrame);
-            } else {
-                resolve();
-            }
+            console.error("Frame processing error:", e);
           }
         };
 
-        if ((video as any).requestVideoFrameCallback) {
-            (video as any).requestVideoFrameCallback(processFrame);
-        } else {
-            video.pause();
-            reject(new Error("Browser does not support requestVideoFrameCallback"));
-        }
-        
-        video.play().catch(reject);
+        (video as any).requestVideoFrameCallback(processFrame);
+        await video.play();
       });
 
-      // --- Phase 3: Finalize ---
-      const ranges = processDetections(rawDetectionsRef.current);
-      setState(prev => ({ ...prev, status: 'completed', progress: 100, isProcessing: false }));
-      return ranges;
-
-    } catch (error: any) {
       if (!signal.aborted) {
-        console.error("Processing Error:", error);
-        setState(prev => ({ ...prev, status: 'error', isProcessing: false }));
-        throw error;
+        const ranges = processDetections(rawDetectionsRef.current);
+        
+        setState(prev => ({ 
+          ...prev, 
+          status: 'completed', 
+          progress: 100, 
+          isProcessing: false,
+          detections: ranges
+        }));
+        
+        return ranges;
       }
-      return [];
-    } finally {
-        cleanupVideo();
+
+    } catch (error) {
+      if (!signal.aborted) {
+        console.error("[VisionEngine] Processing Error:", error);
+        setState(prev => ({ ...prev, status: 'error', isProcessing: false }));
+      }
     }
+    return [];
   }, []);
 
-  return { ...state, processVideo };
+  return {
+    ...state,
+    processVideo
+  };
 };

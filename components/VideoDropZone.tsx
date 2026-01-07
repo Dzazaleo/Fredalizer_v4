@@ -12,11 +12,15 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFilesSelected })
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const validateFile = (file: File): boolean => {
+    // Some browsers/OSes might report empty string for file.type on MKV/MOV/etc.
+    // We check either valid MIME type OR valid extension.
     const validTypes = ['video/mp4', 'video/quicktime'];
     const validExtensions = ['.mp4', '.mov'];
     const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
 
+    // Condition: Is INVALID if (Type is NOT in list AND Extension is NOT in list)
     if (!validTypes.includes(file.type) && !validExtensions.includes(fileExtension)) {
+      console.warn(`[VideoDropZone] Skipped file: ${file.name} | Type: ${file.type} | Ext: ${fileExtension}`);
       return false;
     }
     return true;
@@ -24,7 +28,7 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFilesSelected })
 
   const processFiles = useCallback((fileList: FileList | null) => {
     setError(null);
-    if (!fileList) return;
+    if (!fileList || fileList.length === 0) return;
 
     const validFiles: File[] = [];
     let hasInvalid = false;
@@ -38,11 +42,16 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFilesSelected })
     });
 
     if (hasInvalid) {
-      setError(UploadError.INVALID_TYPE + " Some files were skipped.");
+      setError(UploadError.INVALID_TYPE + " Check console for details.");
     }
 
     if (validFiles.length > 0) {
       onFilesSelected(validFiles);
+    }
+    
+    // Reset input to ensure same-file selection works
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   }, [onFilesSelected]);
 
@@ -103,7 +112,7 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFilesSelected })
           type="file"
           ref={fileInputRef}
           onChange={handleFileInputChange}
-          accept="video/mp4,video/quicktime"
+          accept=".mp4,.mov,video/mp4,video/quicktime"
           multiple // Enabled for batching
           className="hidden"
           aria-label="Upload video"
