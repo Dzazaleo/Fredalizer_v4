@@ -151,11 +151,17 @@ const App: React.FC = () => {
       }));
 
     const data = JSON.stringify(manifest, null, 2);
+    
+    // Generate Unique Name: batch-cut-list-{timestamp}-{random}.json
+    const timestamp = new Date().getTime();
+    const randomSuffix = Math.random().toString(36).substring(2, 7);
+    const fileName = `batch-cut-list-${timestamp}-${randomSuffix}.json`;
+
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `batch-cut-list-${new Date().toISOString().slice(0,10)}.json`;
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

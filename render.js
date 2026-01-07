@@ -6,56 +6,103 @@ console.log("------------------------------------------------");
 console.log("   🎬  FREDALIZER BATCH RENDER ENGINE  🎬    ");
 console.log("------------------------------------------------");
 
-// Check for batch list first, then legacy cut-list
-let jsonPath = 'batch-cut-list.json';
-if (!fs.existsSync(jsonPath)) {
-    // Try to find a file matching the pattern batch-cut-list-*.json
-    const files = fs.readdirSync('.');
-    const batchFile = files.find(f => f.startsWith('batch-cut-list-') && f.endsWith('.json'));
-    if (batchFile) {
-        jsonPath = batchFile;
-    } else if (fs.existsSync('cut-list.json')) {
-        jsonPath = 'cut-list.json';
-    }
+// --- CONFIGURATION ---
+const VIDEO_SOURCE_DIR = String.raw`C:\Users\LeonardoCunha\Downloads\fredalizer_v4\game_elements\footage`;
+const VIDEO_OUTPUT_DIR = String.raw`C:\Users\LeonardoCunha\Downloads\fredalizer_v4\game_elements\processed`;
+
+// Ensure output directory exists
+if (!fs.existsSync(VIDEO_OUTPUT_DIR)) {
+    console.log(`📂 Creating output folder: ${VIDEO_OUTPUT_DIR}`);
+    fs.mkdirSync(VIDEO_OUTPUT_DIR, { recursive: true });
 }
 
-if (!fs.existsSync(jsonPath)) {
-    console.error(`❌ Error: Could not find 'batch-cut-list.json' or similar manifest file.`);
+// --- 1. MULTI-MANIFEST LOADER ---
+function loadAllManifests() {
+    const files = fs.readdirSync('.');
+    // Find ALL files starting with "batch-cut-list" and ending in .json
+    const manifestFiles = files.filter(f => f.startsWith('batch-cut-list') && f.endsWith('.json'));
+
+    let combinedQueue = [];
+
+    if (manifestFiles.length > 0) {
+        console.log(`📚 Found ${manifestFiles.length} manifest file(s):`);
+        manifestFiles.forEach(file => {
+            console.log(`   - Loaded: ${file}`);
+            try {
+                const rawData = JSON.parse(fs.readFileSync(file, 'utf8'));
+                const batchItems = Array.isArray(rawData) ? rawData : [rawData];
+                combinedQueue = [...combinedQueue, ...batchItems];
+            } catch (err) {
+                console.error(`     ❌ Failed to parse ${file}: ${err.message}`);
+            }
+        });
+    } else if (fs.existsSync('cut-list.json')) {
+        console.log(`📄 Using Legacy Manifest: cut-list.json`);
+        const rawData = JSON.parse(fs.readFileSync('cut-list.json', 'utf8'));
+        combinedQueue = Array.isArray(rawData) ? rawData : [rawData];
+    } else {
+        return null;
+    }
+
+    return combinedQueue;
+}
+
+const queue = loadAllManifests();
+
+if (!queue || queue.length === 0) {
+    console.error(`❌ Error: No valid manifest files found (or they are empty).`);
     process.exit(1);
 }
 
-console.log(`📄 Loading manifest: ${jsonPath}`);
-const rawData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+console.log(`\n📂 Total Jobs Queued: ${queue.length}`);
+console.log(`📂 Source: ${VIDEO_SOURCE_DIR}`);
+console.log(`📂 Output: ${VIDEO_OUTPUT_DIR}\n`);
 
-// Normalize to array (support both legacy single object and new batch array)
-const queue = Array.isArray(rawData) ? rawData : [rawData];
-
-console.log(`📂 Found ${queue.length} jobs in queue.\n`);
-
+// --- 2. PROCESSING LOOP ---
 const processNext = (index) => {
     if (index >= queue.length) {
-        console.log("\n✅ ALL JOBS COMPLETED!");
+        console.log("\n✅ ALL MANIFESTS COMPLETED!");
         return;
     }
 
     const data = queue[index];
-    // Handle property naming differences between versions
+    
+    // Normalize Keys (Handle both schemas)
     const inputVideo = data.file || data.fileName; 
     const ranges = data.keepRanges || data.ranges;
 
+    if (!inputVideo) {
+        console.error(`   ❌ Error: Job #${index + 1} missing filename. Skipping.`);
+        processNext(index + 1);
+        return;
+    }
+
     console.log(`\n[${index + 1}/${queue.length}] Processing: ${inputVideo}`);
 
-    if (!inputVideo || !fs.existsSync(inputVideo)) {
-        console.error(`   ❌ Skipped: File '${inputVideo}' not found.`);
+    // --- Path Resolution ---
+    const pathInSourceDir = path.join(VIDEO_SOURCE_DIR, inputVideo);
+    const pathInRoot = inputVideo;
+
+    let finalInputPath = '';
+
+    if (fs.existsSync(pathInSourceDir)) {
+        finalInputPath = pathInSourceDir;
+    } else if (fs.existsSync(pathInRoot)) {
+        finalInputPath = pathInRoot;
+        console.log(`   (Found in root folder)`);
+    } else {
+        console.error(`   ❌ Skipped: File not found in source or root.`);
         processNext(index + 1);
         return;
     }
 
     if (!ranges || ranges.length === 0) {
-        console.log("   ⚠️  No cuts needed. Copying file...");
-        // Logic to just copy could go here, but for now we skip or simple render
+        console.log("   ⚠️  No cuts needed. Skipped.");
+        processNext(index + 1);
+        return;
     }
 
+    // --- FFmpeg Command Build ---
     let filterComplex = '';
     let concatInputs = '';
 
@@ -71,22 +118,21 @@ const processNext = (index) => {
 
     const namePart = path.parse(inputVideo).name;
     const extPart = path.parse(inputVideo).ext;
-    const outputName = `${namePart}_clean${extPart}`;
+    const outputFileName = `${namePart}_clean${extPart}`;
+    const finalOutputPath = path.join(VIDEO_OUTPUT_DIR, outputFileName);
 
-    // Added -y to overwrite output without asking
-    const cmd = `ffmpeg -i "${inputVideo}" -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -g 1 -crf 12 -tune animation -pix_fmt yuv420p -c:a aac -b:a 320k "${outputName}" -y`;
+    const cmd = `ffmpeg -i "${finalInputPath}" -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -g 1 -crf 12 -tune animation -pix_fmt yuv420p -c:a aac -b:a 320k "${finalOutputPath}" -y`;
 
-    console.log(`   🚀 Rendering...`);
+    console.log(`   🚀 Rendering to: ${outputFileName}`);
     
     exec(cmd, (error, stdout, stderr) => {
         if (error) {
             console.error(`   ❌ Error: ${error.message}`);
         } else {
-            console.log(`   ✅ Done!`);
+            console.log(`   ✅ Saved to: ${finalOutputPath}`);
         }
         processNext(index + 1);
     });
 };
 
-// Start Loop
 processNext(0);
