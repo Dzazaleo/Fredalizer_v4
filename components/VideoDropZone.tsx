@@ -1,12 +1,12 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Upload, FileVideo, AlertCircle, XCircle } from 'lucide-react';
-import { VideoFileHandler, UploadError } from '../types';
+import { Upload, FileVideo, AlertCircle } from 'lucide-react';
+import { VideoFilesHandler, UploadError } from '../types';
 
 interface VideoDropZoneProps {
-  onFileSelected: VideoFileHandler;
+  onFilesSelected: VideoFilesHandler;
 }
 
-export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFileSelected }) => {
+export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFilesSelected }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -17,19 +17,34 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFileSelected }) 
     const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
 
     if (!validTypes.includes(file.type) && !validExtensions.includes(fileExtension)) {
-      setError(UploadError.INVALID_TYPE);
       return false;
     }
     return true;
   };
 
-  const processFile = useCallback((file: File) => {
+  const processFiles = useCallback((fileList: FileList | null) => {
     setError(null);
-    if (validateFile(file)) {
-      const url = URL.createObjectURL(file);
-      onFileSelected(file, url);
+    if (!fileList) return;
+
+    const validFiles: File[] = [];
+    let hasInvalid = false;
+
+    Array.from(fileList).forEach(file => {
+      if (validateFile(file)) {
+        validFiles.push(file);
+      } else {
+        hasInvalid = true;
+      }
+    });
+
+    if (hasInvalid) {
+      setError(UploadError.INVALID_TYPE + " Some files were skipped.");
     }
-  }, [onFileSelected]);
+
+    if (validFiles.length > 0) {
+      onFilesSelected(validFiles);
+    }
+  }, [onFilesSelected]);
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -50,16 +65,13 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFileSelected }) 
 
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
-      processFile(files[0]);
+      processFiles(files);
     }
-  }, [processFile]);
+  }, [processFiles]);
 
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      processFile(files[0]);
-    }
-  }, [processFile]);
+    processFiles(e.target.files);
+  }, [processFiles]);
 
   const handleZoneClick = () => {
     fileInputRef.current?.click();
@@ -72,7 +84,7 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFileSelected }) 
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto">
+    <div className="w-full">
       <div
         onClick={handleZoneClick}
         onDragOver={handleDragOver}
@@ -81,7 +93,7 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFileSelected }) 
         className={`
           relative group cursor-pointer
           flex flex-col items-center justify-center
-          p-12 sm:p-16
+          p-10
           border-2 border-dashed rounded-2xl
           transition-all duration-200 ease-in-out
           ${getBorderColor()}
@@ -92,12 +104,13 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFileSelected }) 
           ref={fileInputRef}
           onChange={handleFileInputChange}
           accept="video/mp4,video/quicktime"
+          multiple // Enabled for batching
           className="hidden"
           aria-label="Upload video"
         />
 
         <div className={`
-          p-4 rounded-full mb-4 transition-colors duration-200
+          p-3 rounded-full mb-3 transition-colors duration-200
           ${error 
             ? 'bg-red-900/30 text-red-400' 
             : isDragging 
@@ -105,29 +118,20 @@ export const VideoDropZone: React.FC<VideoDropZoneProps> = ({ onFileSelected }) 
               : 'bg-slate-800 text-slate-400 group-hover:bg-slate-700 group-hover:text-slate-300'
           }
         `}>
-          {error ? <AlertCircle size={32} /> : <Upload size={32} />}
+          {error ? <AlertCircle size={24} /> : <Upload size={24} />}
         </div>
 
-        <div className="text-center space-y-2">
-          <h3 className={`text-lg font-semibold ${error ? 'text-red-400' : 'text-slate-200'}`}>
-            {error ? 'Upload Failed' : isDragging ? 'Drop video here' : 'Upload Video'}
+        <div className="text-center space-y-1">
+          <h3 className={`text-base font-semibold ${error ? 'text-red-400' : 'text-slate-200'}`}>
+            {error ? 'Upload Warning' : isDragging ? 'Drop videos here' : 'Add Videos to Queue'}
           </h3>
           
-          {error ? (
-            <p className="text-sm text-red-400/80 max-w-xs mx-auto">{error}</p>
-          ) : (
-            <>
-              <p className="text-slate-400 text-sm">
-                Drag and drop or click to select
-              </p>
-              <div className="flex items-center justify-center gap-2 text-xs text-slate-500 mt-2">
-                <span className="bg-slate-800 px-2 py-1 rounded">MP4</span>
-                <span className="bg-slate-800 px-2 py-1 rounded">MOV</span>
-              </div>
-            </>
-          )}
+          <p className="text-slate-500 text-xs">
+            MP4 / MOV • Batch Supported
+          </p>
         </div>
       </div>
+      {error && <p className="text-red-400 text-xs text-center mt-2">{error}</p>}
     </div>
   );
 };

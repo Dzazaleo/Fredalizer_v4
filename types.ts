@@ -1,6 +1,7 @@
 export interface VideoAsset {
   file: File;
   previewUrl: string;
+  duration: number; // Added duration for easier range calc
 }
 
 export interface ReferenceAsset {
@@ -8,7 +9,24 @@ export interface ReferenceAsset {
   previewUrl: string;
 }
 
-export type VideoFileHandler = (file: File, url: string) => void;
+export enum ProcessingStatus {
+  IDLE = 'idle',
+  PENDING = 'pending',
+  PROCESSING = 'processing',
+  COMPLETED = 'completed',
+  ERROR = 'error'
+}
+
+export interface QueueItem {
+  id: string; // unique ID
+  asset: VideoAsset;
+  status: ProcessingStatus;
+  progress: number;
+  detections: { start: number; end: number; confidence: number }[];
+  resultRanges?: { start: number; end: number }[]; // The "Keep" ranges
+}
+
+export type VideoFilesHandler = (files: File[]) => void;
 export type ReferenceImageHandler = (file: File, url: string) => void;
 
 export enum UploadError {

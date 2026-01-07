@@ -1,148 +1,171 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { VideoDropZone } from './components/VideoDropZone';
-import { VideoPreview } from './components/VideoPreview';
 import { ReferenceImageDropZone } from './components/ReferenceImageDropZone';
-import { ResultsPanel } from './components/ResultsPanel';
-import { ExportControl } from './components/ExportControl';
-import { VideoAsset, ReferenceAsset } from './types';
-import { Clapperboard, Play, Sparkles } from 'lucide-react';
+import { ReferenceAsset, QueueItem, ProcessingStatus } from './types';
+import { Clapperboard, Sparkles, Trash2, Download, FileVideo, CheckCircle2, Loader2, AlertTriangle, Clock } from 'lucide-react';
 import { Button } from './components/Button';
-import { useVisionEngine } from './hooks/useVisionEngine';
-import { useVideoProcessor } from './hooks/useVideoProcessor';
+import { useVisionEngine, DetectionRange } from './hooks/useVisionEngine';
 import { Range } from './utils/ffmpegBuilder';
 
 const App: React.FC = () => {
-  const [activeAsset, setActiveAsset] = useState<VideoAsset | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
   const [referenceAsset, setReferenceAsset] = useState<ReferenceAsset | null>(null);
-  const [videoDuration, setVideoDuration] = useState<number>(0);
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   
   // Vision Engine Hook
   const { 
-    isProcessing: isVisionProcessing, 
     progress: visionProgress, 
-    status: visionStatus, 
-    detections, 
     processVideo: runVision 
   } = useVisionEngine();
 
-  // FFmpeg Processor Hook
-  const {
-    processVideo: exportVideo,
-    isProcessing: isExporting,
-    progress: exportProgress,
-    status: exportStatus,
-    isReady: isEngineReady
-  } = useVideoProcessor();
+  // Helper to load duration
+  const getVideoDuration = (url: string): Promise<number> => {
+    return new Promise((resolve) => {
+      const vid = document.createElement('video');
+      vid.preload = 'metadata';
+      vid.onloadedmetadata = () => {
+        resolve(vid.duration);
+      };
+      vid.onerror = () => resolve(0);
+      vid.src = url;
+    });
+  };
 
-  // Critical Memory Management: Cleanup object URL when component unmounts or asset changes
-  useEffect(() => {
-    return () => {
-      if (activeAsset?.previewUrl) {
-        URL.revokeObjectURL(activeAsset.previewUrl);
-        console.log(`[Memory] Revoked Video URL: ${activeAsset.previewUrl}`);
-      }
-    };
-  }, [activeAsset]);
-  
-  const handleFileSelected = useCallback((file: File, url: string) => {
-    if (activeAsset) {
-      URL.revokeObjectURL(activeAsset.previewUrl);
-    }
-    setActiveAsset({ file, previewUrl: url });
+  const handleFilesSelected = async (files: File[]) => {
+    // Generate items
+    const newItems: QueueItem[] = await Promise.all(files.map(async (file) => {
+      const url = URL.createObjectURL(file);
+      const duration = await getVideoDuration(url);
+      return {
+        id: crypto.randomUUID(),
+        asset: { file, previewUrl: url, duration },
+        status: ProcessingStatus.PENDING,
+        progress: 0,
+        detections: []
+      };
+    }));
 
-    // Capture duration for timeline calculations
-    const vid = document.createElement('video');
-    vid.preload = 'metadata';
-    vid.src = url;
-    vid.onloadedmetadata = () => {
-      setVideoDuration(vid.duration);
-    };
-  }, [activeAsset]);
+    setQueue(prev => [...prev, ...newItems]);
+  };
 
   const handleReferenceSelected = useCallback((file: File, url: string) => {
     setReferenceAsset({ file, previewUrl: url });
   }, []);
 
-  const handleRemoveVideo = useCallback(() => {
-    setActiveAsset(null); 
-    setVideoDuration(0);
-  }, []);
-
-  const handleStartProcessing = () => {
-    if (activeAsset && referenceAsset) {
-      runVision(activeAsset.previewUrl, referenceAsset.previewUrl);
-    } else {
-      alert("Please upload both video footage and a reference screenshot.");
-    }
+  const handleRemoveItem = (id: string) => {
+    setQueue(prev => {
+      const item = prev.find(i => i.id === id);
+      if (item) URL.revokeObjectURL(item.asset.previewUrl);
+      return prev.filter(i => i.id !== id);
+    });
   };
 
   /**
-   * Calculates the "Keep" ranges by inverting the detection ranges.
-   * Logic: The detections are the "bad" parts (menus). We want everything else.
-   * Update: Applies a FRAME_MARGIN (0.05s) to prevent frame bleeding.
+   * Calculates "Keep" ranges (Hybrid Cut List logic)
    */
-  const getKeepRanges = useCallback((): Range[] => {
-    if (!videoDuration) return [];
-    
-    // If no detections found (and scan is complete), keep the whole video
-    if (detections.length === 0) {
-       return [{ start: 0, end: videoDuration }];
-    }
+  const calculateKeepRanges = (detections: DetectionRange[], duration: number): Range[] => {
+    if (duration === 0) return [];
+    if (detections.length === 0) return [{ start: 0, end: duration }];
 
-    const FRAME_MARGIN = 0.05; // ~3 frames at 60fps safety buffer
-    const sortedDetections = [...detections].sort((a, b) => a.start - b.start);
+    const FRAME_MARGIN = 0.05; 
+    const sorted = [...detections].sort((a, b) => a.start - b.start);
     const keep: Range[] = [];
     let currentCursor = 0;
 
-    sortedDetections.forEach(det => {
-      // Calculate where the current 'good' segment should end
-      // We subtract the margin from the detection start to stop early
+    sorted.forEach(det => {
       const safeEnd = Math.max(0, det.start - FRAME_MARGIN);
-
-      // Add segment before the detection if it's long enough (> 0.1s)
       if (safeEnd > currentCursor + 0.1) {
         keep.push({ start: currentCursor, end: safeEnd });
       }
-      
-      // Move cursor to the end of detection plus margin
-      // Clamp to videoDuration to ensure we don't exceed the file length
-      currentCursor = Math.max(currentCursor, Math.min(videoDuration, det.end + FRAME_MARGIN));
+      currentCursor = Math.max(currentCursor, Math.min(duration, det.end + FRAME_MARGIN));
     });
 
-    // Add final segment after last detection
-    if (currentCursor < videoDuration - 0.1) {
-      keep.push({ start: currentCursor, end: videoDuration });
+    if (currentCursor < duration - 0.1) {
+      keep.push({ start: currentCursor, end: duration });
     }
     
     return keep;
-  }, [detections, videoDuration]);
-
-  const handleExport = async () => {
-    if (!activeAsset) return;
-    
-    const keepRanges = getKeepRanges();
-    if (keepRanges.length === 0) {
-      alert("No clean footage remaining to export.");
-      return;
-    }
-
-    const blobUrl = await exportVideo(activeAsset.file, keepRanges);
-    
-    if (blobUrl) {
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = `clean_${activeAsset.file.name}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      // Optional: revoke blobUrl after a delay? handled by browser usually but good practice if stored
-    }
   };
 
-  const keepRanges = getKeepRanges();
+  const processQueue = async () => {
+    if (!referenceAsset) return;
+    setIsBatchProcessing(true);
+
+    // Create a copy of IDs to process to avoid closure staleness issues, 
+    // but we will access the *current* queue state via setters to ensure updates work
+    const itemIds = queue.map(i => i.id);
+
+    for (const id of itemIds) {
+      // Find current item state
+      let currentItem = queue.find(i => i.id === id);
+      
+      // Skip if already done or removed
+      if (!currentItem || currentItem.status === ProcessingStatus.COMPLETED) continue;
+
+      setActiveJobId(id);
+      
+      // Update status to PROCESSING
+      setQueue(prev => prev.map(item => 
+        item.id === id ? { ...item, status: ProcessingStatus.PROCESSING } : item
+      ));
+
+      try {
+        // Run Vision
+        const detections = await runVision(currentItem.asset.previewUrl, referenceAsset.previewUrl);
+        const ranges = calculateKeepRanges(detections, currentItem.asset.duration);
+
+        // Update Success
+        setQueue(prev => prev.map(item => 
+          item.id === id ? { 
+            ...item, 
+            status: ProcessingStatus.COMPLETED, 
+            detections, 
+            resultRanges: ranges,
+            progress: 100 
+          } : item
+        ));
+
+        // Memory Cleanup (Strict)
+        URL.revokeObjectURL(currentItem.asset.previewUrl);
+
+      } catch (err) {
+        // Update Error
+        console.error(`Failed to process ${currentItem.asset.file.name}`, err);
+        setQueue(prev => prev.map(item => 
+          item.id === id ? { ...item, status: ProcessingStatus.ERROR } : item
+        ));
+      }
+    }
+
+    setActiveJobId(null);
+    setIsBatchProcessing(false);
+  };
+
+  const downloadBatchJson = () => {
+    const manifest = queue
+      .filter(item => item.status === ProcessingStatus.COMPLETED)
+      .map(item => ({
+        file: item.asset.file.name,
+        duration: item.asset.duration,
+        keepRanges: item.resultRanges || [],
+        detections: item.detections
+      }));
+
+    const data = JSON.stringify(manifest, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `batch-cut-list-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col">
+    <div className="min-h-screen bg-slate-950 flex flex-col font-sans">
       {/* Navbar */}
       <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -150,109 +173,139 @@ const App: React.FC = () => {
             <div className="bg-blue-600 p-1.5 rounded-lg text-white">
               <Clapperboard size={20} />
             </div>
-            <h1 className="text-xl font-bold text-slate-100 tracking-tight">Studio<span className="text-blue-500">Ingest</span></h1>
+            <h1 className="text-xl font-bold text-slate-100 tracking-tight">Fredalizer<span className="text-blue-500">Batch</span></h1>
           </div>
           <div className="flex items-center gap-4 text-sm text-slate-500">
-             <div className="flex items-center gap-1">
-               <span className={`w-2 h-2 rounded-full ${isEngineReady ? 'bg-green-500' : 'bg-amber-500'}`}></span>
-               <span>Engine {isEngineReady ? 'Ready' : 'Loading'}</span>
-             </div>
-             <span>v1.2.0</span>
+             <span>v4.0 Batch</span>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 w-full">
-        <div className="max-w-6xl mx-auto">
-          <div className="text-center mb-10 space-y-2">
-            <h2 className="text-3xl font-bold text-slate-100">
-              {activeAsset ? 'Review Footage & Targets' : 'Import Source Footage'}
-            </h2>
-            <p className="text-slate-400 text-lg">
-              {activeAsset 
-                ? 'Configure your vision detection targets.' 
-                : 'Upload your raw video files to begin the ingestion workflow.'}
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
-            {/* Left Column: Video & Results */}
-            <div className="lg:col-span-2 space-y-8 transition-all duration-300">
-              {activeAsset ? (
-                <VideoPreview asset={activeAsset} onRemove={handleRemoveVideo} />
-              ) : (
-                <VideoDropZone onFileSelected={handleFileSelected} />
-              )}
-              
-              {/* Results Section */}
-              {visionStatus !== 'idle' && (
-                <ResultsPanel 
-                  status={visionStatus} 
-                  progress={visionProgress} 
-                  detections={detections} 
-                />
-              )}
-
-              {/* Export Control */}
-              {visionStatus === 'completed' && activeAsset && (
-                 <ExportControl 
-                    keepRanges={keepRanges}
-                    onExport={handleExport}
-                    isProcessing={isExporting}
-                    progress={exportProgress}
-                    status={exportStatus}
-                 />
-              )}
+      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          
+          {/* Left Column: Configuration & Uploader (4 cols) */}
+          <div className="lg:col-span-4 space-y-6">
+            <div className="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800 space-y-6">
+              <h3 className="font-semibold text-slate-200">1. Define Target</h3>
+              <ReferenceImageDropZone onImageLoaded={handleReferenceSelected} />
             </div>
 
-            {/* Right Column: Reference/Configuration */}
-            <div className="lg:col-span-1 space-y-6">
-              <div className="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800">
-                <h3 className="font-semibold text-slate-200 mb-4">Vision Settings</h3>
-                <ReferenceImageDropZone onImageLoaded={handleReferenceSelected} />
-                
-                <div className="mt-6 pt-6 border-t border-slate-800 space-y-4">
-                  <div className="text-xs text-slate-500 space-y-2">
-                    <p>
-                      <span className="font-medium text-slate-400">Status:</span>{' '}
-                      {activeAsset && referenceAsset 
-                        ? <span className="text-green-500">Ready for processing</span> 
-                        : <span className="text-amber-500">Waiting for inputs</span>
-                      }
-                    </p>
-                    <p>
-                      The engine will scan every 0.5s for the provided visual fingerprint.
-                    </p>
-                  </div>
-                  
-                  <Button 
-                    className="w-full flex items-center justify-center gap-2" 
-                    disabled={!activeAsset || !referenceAsset || isVisionProcessing || isExporting}
-                    onClick={handleStartProcessing}
-                  >
-                    {isVisionProcessing ? (
-                      <>Processing...</>
-                    ) : (
-                      <>
-                        <Sparkles size={16} />
-                        Run VisionEngine
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </div>
+            <div className="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800 space-y-6">
+               <h3 className="font-semibold text-slate-200">2. Add Footage</h3>
+               <VideoDropZone onFilesSelected={handleFilesSelected} />
+               <p className="text-xs text-slate-500 text-center">
+                 {queue.length} items in queue
+               </p>
             </div>
+
+             <div className="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800">
+                <Button 
+                  className="w-full flex items-center justify-center gap-2 py-3" 
+                  disabled={!referenceAsset || queue.length === 0 || isBatchProcessing}
+                  onClick={processQueue}
+                >
+                  {isBatchProcessing ? <Loader2 className="animate-spin" /> : <Sparkles size={18} />}
+                  {isBatchProcessing ? 'Processing Queue...' : 'Run Batch Analysis'}
+                </Button>
+             </div>
           </div>
+
+          {/* Right Column: Queue List (8 cols) */}
+          <div className="lg:col-span-8 space-y-4">
+             <div className="flex items-center justify-between mb-2">
+               <h2 className="text-xl font-bold text-slate-200">Processing Queue</h2>
+               <Button 
+                 variant="secondary" 
+                 disabled={!queue.some(i => i.status === ProcessingStatus.COMPLETED)}
+                 onClick={downloadBatchJson}
+                 className="flex gap-2 text-sm"
+               >
+                 <Download size={14} /> Download Manifest
+               </Button>
+             </div>
+
+             {queue.length === 0 ? (
+               <div className="h-64 flex flex-col items-center justify-center border-2 border-dashed border-slate-800 rounded-2xl text-slate-600 bg-slate-900/50">
+                 <FileVideo size={48} className="mb-4 opacity-50" />
+                 <p>Queue is empty. Add videos to begin.</p>
+               </div>
+             ) : (
+               <div className="space-y-3">
+                 {queue.map((item) => (
+                   <div 
+                     key={item.id} 
+                     className={`
+                       relative overflow-hidden rounded-xl border p-4 transition-all
+                       ${item.status === ProcessingStatus.PROCESSING 
+                         ? 'bg-blue-900/10 border-blue-500/50' 
+                         : 'bg-slate-900 border-slate-800'
+                       }
+                     `}
+                   >
+                      <div className="flex items-center justify-between z-10 relative">
+                        {/* File Info */}
+                        <div className="flex items-center gap-4">
+                          <div className={`p-2 rounded-lg ${item.status === ProcessingStatus.COMPLETED ? 'bg-green-500/20 text-green-500' : 'bg-slate-800 text-slate-400'}`}>
+                            {item.status === ProcessingStatus.PROCESSING ? <Loader2 className="animate-spin" size={20} /> :
+                             item.status === ProcessingStatus.COMPLETED ? <CheckCircle2 size={20} /> :
+                             item.status === ProcessingStatus.ERROR ? <AlertTriangle size={20} className="text-red-500" /> :
+                             <FileVideo size={20} />}
+                          </div>
+                          <div>
+                             <h4 className="font-medium text-slate-200 text-sm">{item.asset.file.name}</h4>
+                             <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
+                               <span>{(item.asset.file.size / (1024*1024)).toFixed(1)} MB</span>
+                               <span>•</span>
+                               <span className="flex items-center gap-1"><Clock size={10} /> {item.asset.duration.toFixed(1)}s</span>
+                             </div>
+                          </div>
+                        </div>
+
+                        {/* Status/Actions */}
+                        <div className="flex items-center gap-4">
+                           {item.status === ProcessingStatus.COMPLETED && (
+                             <div className="text-right">
+                               <span className="block text-lg font-bold text-green-400">{item.resultRanges?.length || 0}</span>
+                               <span className="text-xs text-slate-500 uppercase">Cuts</span>
+                             </div>
+                           )}
+                           
+                           {item.status === ProcessingStatus.PROCESSING && (
+                             <div className="w-24 text-right">
+                               <span className="text-lg font-bold text-blue-400">{visionProgress}%</span>
+                             </div>
+                           )}
+
+                           <button 
+                             onClick={() => handleRemoveItem(item.id)}
+                             disabled={isBatchProcessing}
+                             className="p-2 text-slate-600 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-colors disabled:opacity-30"
+                           >
+                             <Trash2 size={16} />
+                           </button>
+                        </div>
+                      </div>
+
+                      {/* Progress Bar Background */}
+                      {item.status === ProcessingStatus.PROCESSING && (
+                        <div 
+                          className="absolute bottom-0 left-0 h-1 bg-blue-500 transition-all duration-300" 
+                          style={{ width: `${visionProgress}%` }}
+                        />
+                      )}
+                      {item.status === ProcessingStatus.COMPLETED && (
+                        <div className="absolute bottom-0 left-0 h-1 w-full bg-green-500/50" />
+                      )}
+                   </div>
+                 ))}
+               </div>
+             )}
+          </div>
+
         </div>
       </main>
-
-      {/* Footer */}
-      <footer className="border-t border-slate-800 bg-slate-900 mt-auto">
-        <div className="max-w-7xl mx-auto px-4 py-6 text-center text-sm text-slate-500">
-          <p>&copy; {new Date().getFullYear()} StudioIngest Module. All rights reserved.</p>
-        </div>
-      </footer>
     </div>
   );
 };
