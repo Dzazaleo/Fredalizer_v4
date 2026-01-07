@@ -15,7 +15,7 @@ export interface VisionProfile {
   };
 }
 
-// Hardcoded Robust Colors (RGB)
+// Hardcoded Robust Colors (RGB) - PRESERVED FOR DETECTION
 const TARGET_COLORS = {
   MENU_DARK: [14, 4, 49],   // Deep Purple Background
   MENU_LIGHT: [50, 4, 139], // Lighter Purple Selection Bar
@@ -29,7 +29,6 @@ interface HSVRange {
 
 /**
  * Helper to convert RGB to OpenCV HSV (H: 0-180, S: 0-255, V: 0-255)
- * Adds tolerances to create a detection range.
  */
 function getHsvRange(rgb: number[], tolerance = { h: 10, s: 40, v: 40 }): HSVRange {
   const r = rgb[0] / 255;
@@ -75,40 +74,33 @@ function getHsvRange(rgb: number[], tolerance = { h: 10, s: 40, v: 40 }): HSVRan
 }
 
 /**
- * Analyzes a Reference Screenshot to create a Spatial & Color Profile.
- * 
- * Algorithm:
- * 1. Convert Image to HSV.
- * 2. Filter for MENU_DARK to find the menu body.
- * 3. Extract geometric properties and NORMALIZE them (0.0-1.0).
- * 4. Package with pre-calculated color bounds for detection.
+ * NEW LOGIC: Mask-Based Calibration
+ * 1. Derives SPATIAL data from the White region of the input mask.
+ * 2. Derives COLOR data from hardcoded constants (ignoring the image colors).
  */
 export function calibrateReference(image: HTMLImageElement): VisionProfile {
   if (typeof cv === 'undefined') {
     throw new Error("OpenCV is not loaded yet.");
   }
 
-  // 1. Prepare Color Bounds (Robust Tolerances)
-  // Dark Purple: Wide tolerance for low-light volatility
-  const darkBounds = getHsvRange(TARGET_COLORS.MENU_DARK, { h: 20, s: 50, v: 50 });
+  // --- Part A: Prepare Static Color Bounds (The Constants) ---
+  // We no longer look at the image for this. We trust the constants.
   
-  // Light Purple: Standard tolerance
+  const darkBounds = getHsvRange(TARGET_COLORS.MENU_DARK, { h: 20, s: 50, v: 50 });
   const lightBounds = getHsvRange(TARGET_COLORS.MENU_LIGHT, { h: 15, s: 50, v: 50 });
   
-  // White: Low Saturation (<30), High Value (>200)
+  // White: Low Saturation, High Value
   const whiteBounds = {
     lower: [0, 0, 200, 0],
     upper: [180, 30, 255, 255]
   };
 
+  // --- Part B: Analyze Mask for Spatial Lock ---
   const src = cv.imread(image);
-  const hsv = new cv.Mat();
-  const mask = new cv.Mat();
+  const gray = new cv.Mat();
+  const binary = new cv.Mat();
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
-
-  // Debug Telemetry: Resolution
-  console.log(`[Calibration] Reference Res: ${src.cols}x${src.rows}`);
 
   let spatial = {
     normalizedBox: { x: 0, y: 0, w: 0, h: 0 },
@@ -116,19 +108,14 @@ export function calibrateReference(image: HTMLImageElement): VisionProfile {
   };
 
   try {
-    cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
-    cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
-
-    // Filter MENU_DARK
-    const lowScalar = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), darkBounds.lower);
-    const highScalar = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), darkBounds.upper);
+    // 1. Convert to Binary Mask (White vs Black)
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
     
-    cv.inRange(hsv, lowScalar, highScalar, mask);
-    lowScalar.delete();
-    highScalar.delete();
+    // Threshold: Anything brighter than 200 becomes 255 (White), else 0 (Black)
+    cv.threshold(gray, binary, 200, 255, cv.THRESH_BINARY);
 
-    // Find largest contour
-    cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    // 2. Find Contours of the White Area
+    cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
     let maxArea = 0;
     let bestRect = null;
@@ -143,13 +130,13 @@ export function calibrateReference(image: HTMLImageElement): VisionProfile {
     }
 
     const totalPixels = src.cols * src.rows;
-    // Threshold: 1% of screen area to be considered a menu
-    if (bestRect && maxArea > (totalPixels * 0.01)) {
+    
+    // Threshold: 0.1% area (Relaxed, since mask is explicit)
+    if (bestRect && maxArea > (totalPixels * 0.001)) {
       
-      // Log Detected Box (Pixels)
-      console.log(`[Calibration] Detected Menu Box: x=${bestRect.x}, y=${bestRect.y}, w=${bestRect.width}, h=${bestRect.height}`);
+      console.log(`[Calibration] Mask Target Found: x=${bestRect.x}, y=${bestRect.y}, w=${bestRect.width}, h=${bestRect.height}`);
 
-      // CRITICAL: Normalization
+      // 3. Normalize
       spatial = {
         normalizedBox: {
           x: bestRect.x / src.cols,
@@ -160,21 +147,20 @@ export function calibrateReference(image: HTMLImageElement): VisionProfile {
         aspectRatio: bestRect.width / bestRect.height
       };
 
-      // Log Normalized Profile
-      console.log(`[Calibration] Normalized Profile: x=${spatial.normalizedBox.x.toFixed(4)}, y=${spatial.normalizedBox.y.toFixed(4)}, w=${spatial.normalizedBox.w.toFixed(4)}, h=${spatial.normalizedBox.h.toFixed(4)}`);
+      console.log(`[Calibration] Normalized Profile: ${JSON.stringify(spatial.normalizedBox)}`);
 
     } else {
-      console.error(`[Calibration] FAILED. Max Area: ${maxArea} (Threshold: ${totalPixels * 0.01})`);
-      throw new Error("Calibration failed: Could not detect the menu box in the reference image.");
+      throw new Error("Calibration failed: No white target mask found in the uploaded image.");
     }
 
   } catch (e) {
     console.error("Calibration Error:", e);
     throw e;
   } finally {
+    // Clean up all Mats
     src.delete();
-    hsv.delete();
-    mask.delete();
+    gray.delete();
+    binary.delete();
     contours.delete();
     hierarchy.delete();
   }
