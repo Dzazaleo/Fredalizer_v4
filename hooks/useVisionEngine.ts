@@ -45,31 +45,18 @@ export const useVisionEngine = () => {
   });
 
   const abortControllerRef = useRef<AbortController | null>(null);
-  const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rawDetectionsRef = useRef<number[]>([]);
 
   useEffect(() => {
-    const video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-    videoElementRef.current = video;
-
     const canvas = document.createElement('canvas');
     canvasRef.current = canvas;
-
+    
     return () => {
-      if (videoElementRef.current) {
-        videoElementRef.current.pause();
-        videoElementRef.current.removeAttribute('src');
-        videoElementRef.current.load();
-      }
       if (abortControllerRef.current) abortControllerRef.current.abort();
     };
   }, []);
 
-  // Updated Signature: Returns Promise<DetectionRange[]>
   const processVideo = useCallback(async (videoUrl: string, referenceImageUrl: string): Promise<DetectionRange[]> => {
     if (typeof cv === 'undefined') {
       console.error("OpenCV is not loaded");
@@ -77,11 +64,7 @@ export const useVisionEngine = () => {
       throw new Error("OpenCV not loaded");
     }
 
-    setState({
-      isProcessing: true,
-      progress: 0,
-      status: 'initializing',
-    });
+    setState({ isProcessing: true, progress: 0, status: 'initializing' });
     rawDetectionsRef.current = [];
 
     if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -89,12 +72,36 @@ export const useVisionEngine = () => {
     abortControllerRef.current = abortController;
     const { signal } = abortController;
 
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+
+    // Hard Reset Cleanup
+    const cleanupVideo = () => {
+        try {
+          // Explicitly nullify listeners
+          video.onloadeddata = null;
+          video.onended = null;
+          video.onerror = null;
+          (video as any).requestVideoFrameCallback = null;
+          
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+          video.remove();
+        } catch (e) {
+          console.warn("Video cleanup warning:", e);
+        }
+    };
+
     try {
       // --- Phase 1: Calibration ---
       setState(prev => ({ ...prev, status: 'calibrating' }));
       const referenceImage = new Image();
       referenceImage.crossOrigin = "anonymous";
       referenceImage.src = referenceImageUrl;
+      
       await new Promise((resolve, reject) => {
         referenceImage.onload = resolve;
         referenceImage.onerror = reject;
@@ -105,20 +112,28 @@ export const useVisionEngine = () => {
 
       // --- Phase 2: Processing ---
       setState(prev => ({ ...prev, status: 'processing' }));
-      const video = videoElementRef.current!;
       const canvas = canvasRef.current!;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) throw new Error("No Context");
 
       video.src = videoUrl;
+
+      // Robust Load Wait with Timeout
       await new Promise((resolve, reject) => {
-        video.onloadeddata = resolve;
-        video.onerror = reject;
+        const timeoutId = setTimeout(() => reject(new Error("Video load timeout")), 15000);
+        
+        video.onloadeddata = () => {
+          clearTimeout(timeoutId);
+          resolve(true);
+        };
+        video.onerror = (e) => {
+          clearTimeout(timeoutId);
+          reject(new Error(`Video Load Failed: ${e}`));
+        };
       });
 
       if (signal.aborted) throw new Error("Aborted");
 
-      // Logic 1 (Temporal Resolution): Set playbackRate to 0.5x for accuracy
       video.playbackRate = 0.5;
 
       const processWidth = 640;
@@ -127,24 +142,30 @@ export const useVisionEngine = () => {
       canvas.width = processWidth;
       canvas.height = processHeight;
 
-      await new Promise<void>(async (resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         video.onended = () => resolve();
         video.onerror = (e) => reject(e);
 
         let frameCount = 0;
+        
         const processFrame = async (now: number, metadata: any) => {
           if (signal.aborted) {
-            video.pause();
+            resolve();
             return;
           }
+
           try {
             ctx.drawImage(video, 0, 0, processWidth, processHeight);
+            
             let mat: any = null;
             try {
               const imageData = ctx.getImageData(0, 0, processWidth, processHeight);
               mat = cv.matFromImageData(imageData);
               const isDetected = scanFrame(mat, profile, false);
-              if (isDetected) rawDetectionsRef.current.push(metadata.mediaTime);
+              
+              if (isDetected) {
+                rawDetectionsRef.current.push(metadata.mediaTime);
+              }
             } finally {
               if (mat) mat.delete();
             }
@@ -157,13 +178,27 @@ export const useVisionEngine = () => {
 
             if (!video.paused && !video.ended) {
               (video as any).requestVideoFrameCallback(processFrame);
+            } else {
+                resolve();
             }
           } catch (e) {
             console.error("Frame error", e);
+            if (!video.paused && !video.ended) {
+                (video as any).requestVideoFrameCallback(processFrame);
+            } else {
+                resolve();
+            }
           }
         };
-        (video as any).requestVideoFrameCallback(processFrame);
-        await video.play();
+
+        if ((video as any).requestVideoFrameCallback) {
+            (video as any).requestVideoFrameCallback(processFrame);
+        } else {
+            video.pause();
+            reject(new Error("Browser does not support requestVideoFrameCallback"));
+        }
+        
+        video.play().catch(reject);
       });
 
       // --- Phase 3: Finalize ---
@@ -178,11 +213,10 @@ export const useVisionEngine = () => {
         throw error;
       }
       return [];
+    } finally {
+        cleanupVideo();
     }
   }, []);
 
-  return {
-    ...state,
-    processVideo
-  };
+  return { ...state, processVideo };
 };

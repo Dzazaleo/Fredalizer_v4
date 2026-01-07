@@ -92,30 +92,23 @@ const App: React.FC = () => {
     if (!referenceAsset) return;
     setIsBatchProcessing(true);
 
-    // Create a copy of IDs to process to avoid closure staleness issues, 
-    // but we will access the *current* queue state via setters to ensure updates work
     const itemIds = queue.map(i => i.id);
 
     for (const id of itemIds) {
-      // Find current item state
       let currentItem = queue.find(i => i.id === id);
       
-      // Skip if already done or removed
       if (!currentItem || currentItem.status === ProcessingStatus.COMPLETED) continue;
 
       setActiveJobId(id);
       
-      // Update status to PROCESSING
       setQueue(prev => prev.map(item => 
         item.id === id ? { ...item, status: ProcessingStatus.PROCESSING } : item
       ));
 
       try {
-        // Run Vision
         const detections = await runVision(currentItem.asset.previewUrl, referenceAsset.previewUrl);
         const ranges = calculateKeepRanges(detections, currentItem.asset.duration);
 
-        // Update Success
         setQueue(prev => prev.map(item => 
           item.id === id ? { 
             ...item, 
@@ -126,15 +119,20 @@ const App: React.FC = () => {
           } : item
         ));
 
-        // Memory Cleanup (Strict)
         URL.revokeObjectURL(currentItem.asset.previewUrl);
 
+        // DELAY for Garbage Collection Stability
+        await new Promise(r => setTimeout(r, 500));
+
       } catch (err) {
-        // Update Error
-        console.error(`Failed to process ${currentItem.asset.file.name}`, err);
+        console.error(`Failed to process ${currentItem?.asset?.file?.name}`, err);
         setQueue(prev => prev.map(item => 
           item.id === id ? { ...item, status: ProcessingStatus.ERROR } : item
         ));
+        
+        if (currentItem) {
+            URL.revokeObjectURL(currentItem.asset.previewUrl);
+        }
       }
     }
 
