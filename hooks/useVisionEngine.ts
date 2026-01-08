@@ -204,7 +204,7 @@ export const useVisionEngine = () => {
               }
               
               // CRITICAL: Yield to main thread immediately after heavy processing
-              // This prevents browser "Page Unresponsive" dialogs on large/heavy files
+              // This prevents browser "Page Unresponsive" dialogs on large/heavy files.
               await new Promise(r => setTimeout(r, 0));
             }
 
