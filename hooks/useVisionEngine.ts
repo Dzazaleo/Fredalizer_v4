@@ -160,10 +160,21 @@ export const useVisionEngine = () => {
         // Frame Sampling Config
         const SAMPLE_INTERVAL = 0.1; // 10 FPS effective scanning rate
         let uiUpdateCounter = 0;
+        let frameCount = 0;
         
         const processFrame = async (now: number, metadata: any) => {
+          frameCount++;
+
           if (signal.aborted) {
             video.pause();
+            return;
+          }
+
+          // OPTIMIZATION: Scan only every 2nd frame
+          if (frameCount % 2 !== 0) {
+            if (!video.paused && !video.ended) {
+              (video as any).requestVideoFrameCallback(processFrame);
+            }
             return;
           }
 

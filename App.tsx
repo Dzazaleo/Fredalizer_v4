@@ -125,17 +125,17 @@ const App: React.FC = () => {
     if (duration === 0) return [];
     if (detections.length === 0) return [{ start: 0, end: duration }];
 
-    const FRAME_MARGIN = 0.05; 
+    const SAFETY_BUFFER = 0.1; // Increased buffer (approx 3 frames @ 30fps)
     const sorted = [...detections].sort((a, b) => a.start - b.start);
     const keep: Range[] = [];
     let currentCursor = 0;
 
     sorted.forEach(det => {
-      const safeEnd = Math.max(0, det.start - FRAME_MARGIN);
+      const safeEnd = Math.max(0, det.start - SAFETY_BUFFER);
       if (safeEnd > currentCursor + 0.1) {
         keep.push({ start: currentCursor, end: safeEnd });
       }
-      currentCursor = Math.max(currentCursor, Math.min(duration, det.end + FRAME_MARGIN));
+      currentCursor = Math.max(currentCursor, Math.min(duration, det.end + SAFETY_BUFFER));
     });
 
     if (currentCursor < duration - 0.1) {
