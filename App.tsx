@@ -131,13 +131,19 @@ const App: React.FC = () => {
     let currentCursor = 0;
 
     sorted.forEach(det => {
+      // Cut 0.1s before the detection starts
       const safeEnd = Math.max(0, det.start - SAFETY_BUFFER);
+      
+      // Ensure we have a valid segment to keep
       if (safeEnd > currentCursor + 0.1) {
         keep.push({ start: currentCursor, end: safeEnd });
       }
+      
+      // Resume 0.1s after the detection ends
       currentCursor = Math.max(currentCursor, Math.min(duration, det.end + SAFETY_BUFFER));
     });
 
+    // Add final segment if space remains
     if (currentCursor < duration - 0.1) {
       keep.push({ start: currentCursor, end: duration });
     }
@@ -171,7 +177,7 @@ const App: React.FC = () => {
             ...item, 
             status: ProcessingStatus.COMPLETED, 
             detections, 
-            resultRanges: ranges,
+            resultRanges: ranges, 
             progress: 100 
           } : item
         ));
