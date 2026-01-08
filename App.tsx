@@ -55,12 +55,12 @@ const App: React.FC = () => {
         vid.load();
       };
       
-      // Safety timeout: Extended to 15s for large files (1GB+)
+      // Safety timeout: Extended to 30s for large files (1GB+)
       const timeoutId = setTimeout(() => {
-        console.warn("Video metadata load timed out (15s limit) for:", url);
+        console.warn("Video metadata load timed out (30s limit) for:", url);
         cleanup();
         resolve(0);
-      }, 15000);
+      }, 30000);
 
       vid.onloadedmetadata = () => {
         clearTimeout(timeoutId);

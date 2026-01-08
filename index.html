@@ -14,18 +14,21 @@
   <script type="importmap">
 {
   "imports": {
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
+    "react": "https://esm.sh/react@18.2.0?dev",
+    "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime?dev",
+    "react-dom": "https://esm.sh/react-dom@18.2.0?dev",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client?dev",
+    "lucide-react": "https://esm.sh/lucide-react@0.300.0?dev",
+    "@ffmpeg/ffmpeg": "https://esm.sh/@ffmpeg/ffmpeg@0.12.10?dev",
+    "@ffmpeg/util": "https://esm.sh/@ffmpeg/util@0.12.1?dev",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
-    "vite": "https://esm.sh/vite@^7.3.0",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
-    "url": "https://esm.sh/url@^0.11.4",
     "path": "https://esm.sh/path@^0.12.7",
-    "@ffmpeg/ffmpeg": "https://esm.sh/@ffmpeg/ffmpeg@^0.12.15",
-    "@ffmpeg/util": "https://esm.sh/@ffmpeg/util@^0.12.2",
+    "url": "https://esm.sh/url@^0.11.4",
+    "vite": "https://esm.sh/vite@^7.3.1",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
     "fs": "https://esm.sh/fs@^0.0.1-security",
-    "child_process": "https://esm.sh/child_process@^1.0.2"
+    "child_process": "https://esm.sh/child_process@^1.0.2",
+    "react/": "https://esm.sh/react@^19.2.3/"
   }
 }
 </script>
@@ -33,5 +36,6 @@
 </head>
   <body class="bg-slate-950 text-slate-50 antialiased">
     <div id="root"></div>
+    <script type="module" src="./index.tsx"></script>
   </body>
 </html>

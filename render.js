@@ -7,8 +7,9 @@ console.log("   🎬  FREDALIZER BATCH RENDER ENGINE  🎬    ");
 console.log("------------------------------------------------");
 
 // --- CONFIGURATION ---
-const VIDEO_SOURCE_DIR = String.raw`C:\Users\LeonardoCunha\Downloads\fredalizer_v4\game_elements\footage`;
-const VIDEO_OUTPUT_DIR = String.raw`C:\Users\LeonardoCunha\Downloads\fredalizer_v4\game_elements\processed`;
+// defined as relative paths to ensure machine independence
+const VIDEO_SOURCE_DIR = path.join('game_elements', 'footage');
+const VIDEO_OUTPUT_DIR = path.join('game_elements', 'processed');
 
 // Ensure output directory exists
 if (!fs.existsSync(VIDEO_OUTPUT_DIR)) {
@@ -80,6 +81,7 @@ const processNext = (index) => {
     console.log(`\n[${index + 1}/${queue.length}] Processing: ${inputVideo}`);
 
     // --- Path Resolution ---
+    // Looks for file in game_elements/footage OR in the root folder
     const pathInSourceDir = path.join(VIDEO_SOURCE_DIR, inputVideo);
     const pathInRoot = inputVideo;
 

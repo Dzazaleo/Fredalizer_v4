@@ -140,7 +140,7 @@ export const useVisionEngine = () => {
       if (!ctx) throw new Error("Could not get canvas context");
 
       video.src = videoUrl;
-      video.playbackRate = 2.0; // PROCESS 2x SPEED
+      video.playbackRate = 1.0; // STABILITY: 1.0x to avoid decoder stalls on large files
       
       // Wait for metadata so we know duration
       await new Promise((resolve) => {
@@ -191,16 +191,17 @@ export const useVisionEngine = () => {
               } finally {
                 if (mat) mat.delete();
               }
+              
+              // CRITICAL: Yield to main thread immediately after heavy processing
+              // This prevents browser "Page Unresponsive" dialogs on large/heavy files
+              await new Promise(r => setTimeout(r, 0));
             }
 
             uiUpdateCounter++;
-            // Update UI every ~30 frames of playback (approx every 0.5 - 1s real time)
+            // Update UI every ~0.5s
             if (uiUpdateCounter % 30 === 0) {
               const progress = Math.min(100, Math.round((metadata.mediaTime / video.duration) * 100));
               setState(prev => ({ ...prev, progress }));
-              
-              // CRITICAL: Yield to main thread to allow UI render & prevent freeze
-              await new Promise(r => setTimeout(r, 0));
             }
 
             if (!video.paused && !video.ended) {
